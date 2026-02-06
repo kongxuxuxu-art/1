@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>迷你拳皇：双人格斗</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101725;
+      --panel: #1b2538;
+      --accent: #ffd166;
+      --p1: #3ddc97;
+      --p2: #ff6b6b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Microsoft YaHei", system-ui, sans-serif;
+      background: radial-gradient(circle at top, #243b62, var(--bg));
+      color: #e7ecf5;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .wrap {
+      width: min(980px, 96vw);
+      background: color-mix(in srgb, var(--panel) 92%, black 8%);
+      border: 1px solid #314766;
+      border-radius: 12px;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, .42);
+      overflow: hidden;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 18px;
+      border-bottom: 1px solid #30435e;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .title {
+      font-weight: 800;
+      letter-spacing: .5px;
+    }
+    .controls {
+      font-size: 13px;
+      opacity: .9;
+    }
+    .hud {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 14px;
+      align-items: center;
+      padding: 10px 18px;
+      border-bottom: 1px solid #30435e;
+      font-size: 14px;
+    }
+    .bar {
+      height: 18px;
+      background: #0f1626;
+      border: 1px solid #405779;
+      border-radius: 999px;
+      overflow: hidden;
+      position: relative;
+    }
+    .fill {
+      height: 100%;
+      width: 100%;
+      transition: width .08s linear;
+    }
+    #p1Hp { background: linear-gradient(90deg, #2ecf8f, #5fffb9); }
+    #p2Hp { background: linear-gradient(90deg, #ff7c7c, #ff4f4f); margin-left: auto; }
+    .timer {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--accent);
+      min-width: 52px;
+      text-align: center;
+    }
+    canvas {
+      width: 100%;
+      height: auto;
+      display: block;
+      background: linear-gradient(180deg, #2e4f72 0 62%, #635543 62% 100%);
+    }
+    .msg {
+      padding: 10px 18px 14px;
+      font-size: 14px;
+      color: #d4deef;
+      border-top: 1px solid #30435e;
+    }
+    kbd {
+      background: #243248;
+      border: 1px solid #445b80;
+      border-bottom-width: 3px;
+      border-radius: 6px;
+      padding: 1px 6px;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="title">⚔️ 迷你拳皇：双人格斗</div>
+      <div class="controls">
+        P1: <kbd>A</kbd><kbd>D</kbd> 移动 <kbd>W</kbd> 跳跃 <kbd>F</kbd> 攻击 ｜
+        P2: <kbd>←</kbd><kbd>→</kbd> 移动 <kbd>↑</kbd> 跳跃 <kbd>L</kbd> 攻击
+      </div>
+    </header>
+    <section class="hud">
+      <div class="bar"><div id="p1Hp" class="fill"></div></div>
+      <div class="timer" id="timer">60</div>
+      <div class="bar"><div id="p2Hp" class="fill"></div></div>
+    </section>
+    <canvas id="game" width="960" height="460"></canvas>
+    <div class="msg" id="msg">开始吧！谁先把对手打到 0 血谁赢。按 <kbd>R</kbd> 重新开局。</div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const p1HpEl = document.getElementById('p1Hp');
+    const p2HpEl = document.getElementById('p2Hp');
+    const timerEl = document.getElementById('timer');
+    const msgEl = document.getElementById('msg');
+
+    const gravity = 0.95;
+    const groundY = 370;
+    const stagePadding = 24;
+
+    const keys = new Set();
+
+    function createFighter({ x, color, facing = 1, name }) {
+      return {
+        name,
+        x,
+        y: groundY,
+        vx: 0,
+        vy: 0,
+        width: 58,
+        height: 118,
+        speed: 5,
+        jumpPower: 17,
+        hp: 100,
+        color,
+        facing,
+        attackCD: 0,
+        attackTimer: 0,
+        hitFlash: 0,
+        score: 0,
+      };
+    }
+
+    let p1 = createFighter({ x: 180, color: '#3ddc97', facing: 1, name: 'P1' });
+    let p2 = createFighter({ x: 720, color: '#ff6b6b', facing: -1, name: 'P2' });
+
+    let gameTime = 60;
+    let gameOver = false;
+    let roundClock = performance.now();
+
+    const damage = 12;
+    const attackRange = 72;
+
+    function resetGame() {
+      p1 = createFighter({ x: 180, color: '#3ddc97', facing: 1, name: 'P1' });
+      p2 = createFighter({ x: 720, color: '#ff6b6b', facing: -1, name: 'P2' });
+      gameTime = 60;
+      gameOver = false;
+      roundClock = performance.now();
+      msgEl.textContent = '新回合开始！';
+      timerEl.textContent = gameTime;
+    }
+
+    function updateFacing() {
+      if (p1.x < p2.x) {
+        p1.facing = 1;
+        p2.facing = -1;
+      } else {
+        p1.facing = -1;
+        p2.facing = 1;
+      }
+    }
+
+    function doAttack(attacker, defender) {
+      if (attacker.attackCD > 0 || gameOver) return;
+
+      attacker.attackCD = 20;
+      attacker.attackTimer = 8;
+
+      const inFront = attacker.facing === 1 ? defender.x > attacker.x : defender.x < attacker.x;
+      const distance = Math.abs((attacker.x + attacker.width / 2) - (defender.x + defender.width / 2));
+      const yClose = Math.abs(attacker.y - defender.y) < 45;
+
+      if (inFront && distance <= attackRange && yClose) {
+        defender.hp = Math.max(0, defender.hp - damage);
+        defender.hitFlash = 8;
+      }
+    }
+
+    function moveAndPhysics(f) {
+      f.x += f.vx;
+      f.y += f.vy;
+      f.vy += gravity;
+
+      if (f.y >= groundY) {
+        f.y = groundY;
+        f.vy = 0;
+      }
+
+      f.x = Math.max(stagePadding, Math.min(canvas.width - stagePadding - f.width, f.x));
+
+      if (f.attackCD > 0) f.attackCD--;
+      if (f.attackTimer > 0) f.attackTimer--;
+      if (f.hitFlash > 0) f.hitFlash--;
+    }
+
+    function handleInput() {
+      p1.vx = 0;
+      p2.vx = 0;
+
+      if (keys.has('a')) p1.vx = -p1.speed;
+      if (keys.has('d')) p1.vx = p1.speed;
+      if (keys.has('arrowleft')) p2.vx = -p2.speed;
+      if (keys.has('arrowright')) p2.vx = p2.speed;
+
+      if (keys.has('w') && p1.y >= groundY) p1.vy = -p1.jumpPower;
+      if (keys.has('arrowup') && p2.y >= groundY) p2.vy = -p2.jumpPower;
+    }
+
+    function checkEnd() {
+      if (gameOver) return;
+
+      if (p1.hp <= 0 || p2.hp <= 0 || gameTime <= 0) {
+        gameOver = true;
+        const winner = p1.hp === p2.hp ? '平局' : p1.hp > p2.hp ? 'P1 胜利！' : 'P2 胜利！';
+        msgEl.textContent = `回合结束：${winner} 按 R 重新开始。`;
+      }
+    }
+
+    function updateTimer(now) {
+      const elapsedSec = Math.floor((now - roundClock) / 1000);
+      const nextTime = Math.max(0, 60 - elapsedSec);
+      if (nextTime !== gameTime) {
+        gameTime = nextTime;
+        timerEl.textContent = gameTime;
+      }
+    }
+
+    function drawFighter(f) {
+      ctx.save();
+      ctx.translate(f.x, f.y - f.height);
+
+      if (f.hitFlash > 0) {
+        ctx.fillStyle = '#ffffff';
+      } else {
+        ctx.fillStyle = f.color;
+      }
+      ctx.fillRect(0, 30, f.width, f.height - 30);
+
+      ctx.fillStyle = '#111';
+      ctx.fillRect(10, 0, f.width - 20, 35);
+
+      ctx.fillStyle = '#f4f6fb';
+      ctx.fillRect(f.facing === 1 ? f.width - 8 : -10, 58, 18, 10);
+
+      if (f.attackTimer > 0) {
+        ctx.globalAlpha = 0.7;
+        ctx.fillStyle = '#ffd166';
+        const armX = f.facing === 1 ? f.width : -30;
+        ctx.fillRect(armX, 58, 30, 14);
+      }
+
+      ctx.fillStyle = '#eaf1ff';
+      ctx.font = '12px sans-serif';
+      ctx.fillText(f.name, 8, -10);
+      ctx.restore();
+    }
+
+    function drawStage() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      for (let i = 0; i < 8; i++) {
+        ctx.fillRect(70 + i * 120, 82 + (i % 2) * 12, 55, 155);
+      }
+
+      ctx.fillStyle = '#5f4d3a';
+      ctx.fillRect(0, groundY + 2, canvas.width, canvas.height - groundY);
+
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.beginPath();
+      ctx.moveTo(0, groundY + 1);
+      ctx.lineTo(canvas.width, groundY + 1);
+      ctx.stroke();
+    }
+
+    function render() {
+      drawStage();
+      drawFighter(p1);
+      drawFighter(p2);
+
+      p1HpEl.style.width = `${p1.hp}%`;
+      p2HpEl.style.width = `${p2.hp}%`;
+    }
+
+    function tick(now) {
+      if (!gameOver) {
+        handleInput();
+        updateFacing();
+        moveAndPhysics(p1);
+        moveAndPhysics(p2);
+        updateTimer(now);
+        checkEnd();
+      }
+
+      render();
+      requestAnimationFrame(tick);
+    }
+
+    window.addEventListener('keydown', (e) => {
+      const k = e.key.toLowerCase();
+      keys.add(k);
+
+      if (k === 'f') doAttack(p1, p2);
+      if (k === 'l') doAttack(p2, p1);
+      if (k === 'r') resetGame();
+    });
+
+    window.addEventListener('keyup', (e) => {
+      keys.delete(e.key.toLowerCase());
+    });
+
+    render();
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
